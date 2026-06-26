@@ -1,6 +1,7 @@
 #include "win_ui/app_window.hpp"
 
 #include "bsr/core.hpp"
+#include "win_ui/advanced_options_dialog.hpp"
 #include "win_ui/directory_card.hpp"
 
 #include <windows.h>
@@ -26,6 +27,7 @@ constexpr int kCardSpacing = 14;
 constexpr int kBottomSectionGap = 18;
 constexpr int kActionSpacing = 14;
 constexpr int kCheckboxHeight = 24;
+constexpr int kSecondaryButtonWidth = 94;
 constexpr int kRunButtonWidth = 132;
 constexpr int kRunButtonHeight = 36;
 constexpr int kWindowWidth = 688;
@@ -40,6 +42,7 @@ enum ControlId {
     kIdButtonRun = 1004,
     kIdStatus = 1005,
     kIdHint = 1006,
+    kIdButtonAdvanced = 1007,
 };
 
 std::wstring utf8_to_wide(const std::string& value) {
@@ -52,6 +55,26 @@ std::wstring utf8_to_wide(const std::string& value) {
     std::wstring result(size, L'\0');
     MultiByteToWideChar(
         CP_UTF8, 0, value.data(), static_cast<int>(value.size()), result.data(), size);
+    return result;
+}
+
+std::string wide_to_utf8(const std::wstring& value) {
+    if (value.empty()) {
+        return "";
+    }
+
+    const int size = WideCharToMultiByte(
+        CP_UTF8, 0, value.data(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+    std::string result(size, '\0');
+    WideCharToMultiByte(
+        CP_UTF8,
+        0,
+        value.data(),
+        static_cast<int>(value.size()),
+        result.data(),
+        size,
+        nullptr,
+        nullptr);
     return result;
 }
 
@@ -111,12 +134,14 @@ private:
     HWND window_ = nullptr;
     HWND hint_label_ = nullptr;
     HWND copy_checkbox_ = nullptr;
+    HWND advanced_button_ = nullptr;
     HWND run_button_ = nullptr;
     HWND status_bar_ = nullptr;
     HFONT font_ = nullptr;
     HBRUSH background_brush_ = nullptr;
     DirectoryCard subtitle_card_;
     DirectoryCard video_card_;
+    AdvancedOptionsState advanced_options_;
     bool running_ = false;
     UINT current_dpi_ = 96;
 
@@ -158,6 +183,9 @@ private:
         }
         if (copy_checkbox_ != nullptr) {
             SendMessageW(copy_checkbox_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+        }
+        if (advanced_button_ != nullptr) {
+            SendMessageW(advanced_button_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
         }
         if (run_button_ != nullptr) {
             SendMessageW(run_button_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
@@ -339,6 +367,20 @@ private:
             instance_,
             nullptr);
 
+        advanced_button_ = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"高级",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            0,
+            0,
+            0,
+            0,
+            window_,
+            reinterpret_cast<HMENU>(kIdButtonAdvanced),
+            instance_,
+            nullptr);
+
         status_bar_ = CreateWindowExW(
             0,
             STATUSCLASSNAMEW,
@@ -408,6 +450,7 @@ private:
         const int card_spacing = Scale(kCardSpacing);
         const int bottom_section_gap = Scale(kBottomSectionGap);
         const int checkbox_height = Scale(kCheckboxHeight);
+        const int secondary_button_width = Scale(kSecondaryButtonWidth);
         const int run_button_width = Scale(kRunButtonWidth);
         const int run_button_height = Scale(kRunButtonHeight);
         const int content_width = client_rect.right - (margin * 2);
@@ -425,6 +468,13 @@ private:
         const int action_top = std::max(y + card_height + bottom_section_gap, bottom_actions_top);
         MoveWindow(copy_checkbox_, margin, action_top + Scale(6), Scale(200), checkbox_height, TRUE);
         MoveWindow(
+            advanced_button_,
+            client_rect.right - margin - run_button_width - Scale(kActionSpacing) - secondary_button_width,
+            action_top,
+            secondary_button_width,
+            run_button_height,
+            TRUE);
+        MoveWindow(
             run_button_,
             client_rect.right - margin - run_button_width,
             action_top,
@@ -439,6 +489,9 @@ private:
         }
 
         switch (control_id) {
+        case kIdButtonAdvanced:
+            OpenAdvancedOptions();
+            return 0;
         case kIdButtonRun:
             RunRename();
             return 0;
@@ -475,6 +528,7 @@ private:
         subtitle_card_.SetEnabled(!running);
         video_card_.SetEnabled(!running);
         EnableWindow(copy_checkbox_, !running);
+        EnableWindow(advanced_button_, !running);
         UpdateRunAvailability();
     }
 
@@ -485,7 +539,11 @@ private:
     void RunRename() {
         const std::filesystem::path subtitle_path = subtitle_card_.path();
         const std::filesystem::path video_path = video_card_.path();
-        const bool will_copy = SendMessageW(copy_checkbox_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        bsr::core::RenameOptions options;
+        options.will_copy = SendMessageW(copy_checkbox_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        if (advanced_options_.add_suffix_enabled) {
+            options.extra_suffix = wide_to_utf8(advanced_options_.extra_suffix);
+        }
 
         if (subtitle_path.empty() || video_path.empty()) {
             ShowError(L"请先选择字幕目录和视频目录。");
@@ -508,7 +566,7 @@ private:
 
         try {
             const std::vector<std::filesystem::path> created =
-                bsr::core::rename_subtitles(video_path, subtitle_path, will_copy);
+                bsr::core::rename_subtitles(video_path, subtitle_path, options);
 
             if (created.empty()) {
                 SetStatus(L"没有找到可匹配的字幕");
@@ -523,6 +581,21 @@ private:
         SetRunning(false);
     }
 
+    void OpenAdvancedOptions() {
+        AdvancedOptionsDialog dialog;
+        AdvancedOptionsState updated_options = advanced_options_;
+        if (!dialog.ShowModal(instance_, window_, updated_options)) {
+            return;
+        }
+
+        advanced_options_ = std::move(updated_options);
+        if (advanced_options_.add_suffix_enabled) {
+            SetStatus(L"高级选项已更新：添加后缀 ." + advanced_options_.extra_suffix);
+        } else {
+            SetStatus(L"高级选项已更新");
+        }
+    }
+
     void Cleanup() {
         subtitle_card_.Destroy();
         video_card_.Destroy();
@@ -535,6 +608,7 @@ private:
             DeleteObject(font_);
             font_ = nullptr;
         }
+        advanced_button_ = nullptr;
     }
 };
 

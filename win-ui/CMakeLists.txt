@@ -5,6 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_executable(bsr_win_ui WIN32
+    src/advanced_options_dialog.cpp
     src/app_window.cpp
     src/directory_card.cpp
     src/main.cpp
