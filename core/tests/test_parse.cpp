@@ -118,6 +118,26 @@ void test_rename_subtitles_copies_to_both_locations() {
     expect(fs::exists(copied_subtitle), "Copied subtitle missing");
 }
 
+void test_rename_subtitles_silently_skips_same_name_copy() {
+    TempDir root;
+    const fs::path videos = root.path / "videos";
+    const fs::path subtitles = root.path / "subtitles";
+    fs::create_directories(videos);
+    fs::create_directories(subtitles);
+
+    const fs::path video = videos / "[VCB-Studio] Sonny Boy [01][Ma10p_1080p][x265_flac].mkv";
+    const fs::path subtitle =
+        subtitles / "[VCB-Studio] Sonny Boy [01][Ma10p_1080p][x265_flac].ass";
+    write_text(video, "video");
+    write_text(subtitle, "subtitle");
+
+    const auto created = bsr::core::rename_subtitles(videos, subtitles, false);
+
+    expect(created.size() == 1, "Expected a single reported subtitle path");
+    expect(created[0] == subtitle, "Expected the same-name subtitle path to be preserved");
+    expect(fs::exists(subtitle), "Original same-name subtitle should still exist");
+}
+
 void test_rename_subtitles_preserves_cht_tag() {
     TempDir root;
     const fs::path videos = root.path / "videos";
@@ -234,6 +254,7 @@ int main() {
         test_reduce_name_uses_most_distinct_column();
         test_finders_group_by_episode();
         test_rename_subtitles_copies_to_both_locations();
+        test_rename_subtitles_silently_skips_same_name_copy();
         test_rename_subtitles_preserves_cht_tag();
         test_generated_slime_s2_subtitles();
         test_single_digit_subtitles_match_zero_padded_videos();

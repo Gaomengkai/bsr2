@@ -43,6 +43,17 @@ std::string normalize_episode_token(std::string token) {
     return token;
 }
 
+bool is_same_path(
+    const std::filesystem::path& left,
+    const std::filesystem::path& right) {
+    std::error_code ec;
+    if (std::filesystem::equivalent(left, right, ec)) {
+        return true;
+    }
+
+    return left.lexically_normal() == right.lexically_normal();
+}
+
 void replace_all(std::string& text, const std::string& from, const std::string& to) {
     if (from.empty()) {
         return;
@@ -358,17 +369,21 @@ std::vector<std::filesystem::path> rename_subtitles(
     created_paths.reserve(operations.size() * (will_copy ? 2U : 1U));
 
     for (const auto& operation : operations) {
-        std::filesystem::copy_file(
-            operation.subtitle_path,
-            operation.renamed_subtitle_path,
-            std::filesystem::copy_options::skip_existing);
+        if (!is_same_path(operation.subtitle_path, operation.renamed_subtitle_path)) {
+            std::filesystem::copy_file(
+                operation.subtitle_path,
+                operation.renamed_subtitle_path,
+                std::filesystem::copy_options::skip_existing);
+        }
         created_paths.push_back(operation.renamed_subtitle_path);
 
         if (will_copy && !operation.copied_subtitle_path.empty()) {
-            std::filesystem::copy_file(
-                operation.subtitle_path,
-                operation.copied_subtitle_path,
-                std::filesystem::copy_options::skip_existing);
+            if (!is_same_path(operation.subtitle_path, operation.copied_subtitle_path)) {
+                std::filesystem::copy_file(
+                    operation.subtitle_path,
+                    operation.copied_subtitle_path,
+                    std::filesystem::copy_options::skip_existing);
+            }
             created_paths.push_back(operation.copied_subtitle_path);
         }
     }
