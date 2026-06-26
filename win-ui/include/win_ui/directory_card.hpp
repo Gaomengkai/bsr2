@@ -31,6 +31,7 @@ public:
     bool HasPath() const;
     void SetEnabled(bool enabled);
     void SetDropHighlighted(bool highlighted);
+    void SetFont(HFONT font);
     HWND hwnd() const;
 
     void SetOnChoose(std::function<void()> callback);

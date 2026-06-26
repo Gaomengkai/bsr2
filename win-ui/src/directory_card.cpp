@@ -21,6 +21,11 @@ constexpr int kButtonWidth = 96;
 constexpr int kButtonHeight = 32;
 constexpr int kTitleHeight = 18;
 
+int scale_for_window(HWND window, int value) {
+    const UINT dpi = window == nullptr ? 96U : GetDpiForWindow(window);
+    return MulDiv(value, static_cast<int>(dpi), 96);
+}
+
 COLORREF background_color(bool enabled, bool mouse_hot, bool drop_highlighted) {
     if (!enabled) {
         return RGB(245, 246, 248);
@@ -338,6 +343,14 @@ void DirectoryCard::SetDropHighlighted(bool highlighted) {
     InvalidateRect(hwnd_, nullptr, TRUE);
 }
 
+void DirectoryCard::SetFont(HFONT font) {
+    font_ = font;
+    if (choose_button_ != nullptr) {
+        SendMessageW(choose_button_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+    }
+    InvalidateRect(hwnd_, nullptr, TRUE);
+}
+
 HWND DirectoryCard::hwnd() const {
     return hwnd_;
 }
@@ -440,12 +453,15 @@ void DirectoryCard::Layout() {
     RECT rect{};
     GetClientRect(hwnd_, &rect);
 
+    const int padding = scale_for_window(hwnd_, kCardPadding);
+    const int button_width = scale_for_window(hwnd_, kButtonWidth);
+    const int button_height = scale_for_window(hwnd_, kButtonHeight);
     const int width = rect.right - rect.left;
     const int height = rect.bottom - rect.top;
-    const int button_x = width - kCardPadding - kButtonWidth;
-    const int button_y = (height - kButtonHeight) / 2;
+    const int button_x = width - padding - button_width;
+    const int button_y = (height - button_height) / 2;
 
-    MoveWindow(choose_button_, button_x, button_y, kButtonWidth, kButtonHeight, TRUE);
+    MoveWindow(choose_button_, button_x, button_y, button_width, button_height, TRUE);
 }
 
 void DirectoryCard::Paint(HDC dc) {
@@ -470,7 +486,8 @@ void DirectoryCard::Paint(HDC dc) {
 
     RECT frame = rect;
     InflateRect(&frame, -1, -1);
-    RoundRect(mem_dc, frame.left, frame.top, frame.right, frame.bottom, kCardCornerRadius, kCardCornerRadius);
+    const int corner_radius = scale_for_window(hwnd_, kCardCornerRadius);
+    RoundRect(mem_dc, frame.left, frame.top, frame.right, frame.bottom, corner_radius, corner_radius);
 
     SelectObject(mem_dc, old_pen);
     SelectObject(mem_dc, old_brush);
@@ -485,19 +502,25 @@ void DirectoryCard::Paint(HDC dc) {
     GetWindowRect(choose_button_, &button_rect);
     MapWindowPoints(HWND_DESKTOP, hwnd_, reinterpret_cast<POINT*>(&button_rect), 2);
 
+    const int padding = scale_for_window(hwnd_, kCardPadding);
+    const int title_height = scale_for_window(hwnd_, kTitleHeight);
+    const int title_gap = scale_for_window(hwnd_, 8);
+    const int body_right_gap = scale_for_window(hwnd_, 18);
+    const int title_right_gap = scale_for_window(hwnd_, 14);
+
     RECT title_rect{
-        kCardPadding,
-        kCardPadding - 1,
-        button_rect.left - 14,
-        kCardPadding - 1 + kTitleHeight};
+        padding,
+        padding - 1,
+        button_rect.left - title_right_gap,
+        padding - 1 + title_height};
     DrawTextW(mem_dc, title_.c_str(), -1, &title_rect, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
 
     SetTextColor(mem_dc, body_color(IsWindowEnabled(hwnd_) == TRUE, HasPath()));
     RECT body_rect{
-        kCardPadding,
-        title_rect.bottom + 8,
-        button_rect.left - 18,
-        rect.bottom - kCardPadding};
+        padding,
+        title_rect.bottom + title_gap,
+        button_rect.left - body_right_gap,
+        rect.bottom - padding};
 
     const std::wstring text = DisplayText();
     DrawTextW(

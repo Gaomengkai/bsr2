@@ -118,6 +118,53 @@ private:
     DirectoryCard subtitle_card_;
     DirectoryCard video_card_;
     bool running_ = false;
+    UINT current_dpi_ = 96;
+
+    static int ScaleForDpi(UINT dpi, int value) {
+        return MulDiv(value, static_cast<int>(dpi), 96);
+    }
+
+    int Scale(int value) const {
+        return ScaleForDpi(current_dpi_, value);
+    }
+
+    HFONT CreateUiFont() const {
+        return CreateFontW(
+            -MulDiv(9, static_cast<int>(current_dpi_), 72),
+            0,
+            0,
+            0,
+            FW_NORMAL,
+            FALSE,
+            FALSE,
+            FALSE,
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE,
+            L"Microsoft YaHei UI");
+    }
+
+    void RefreshFonts() {
+        if (font_ != nullptr) {
+            DeleteObject(font_);
+            font_ = nullptr;
+        }
+        font_ = CreateUiFont();
+
+        if (hint_label_ != nullptr) {
+            SendMessageW(hint_label_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+        }
+        if (copy_checkbox_ != nullptr) {
+            SendMessageW(copy_checkbox_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+        }
+        if (run_button_ != nullptr) {
+            SendMessageW(run_button_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+        }
+        subtitle_card_.SetFont(font_);
+        video_card_.SetFont(font_);
+    }
 
     bool CreateWindowClass() {
         WNDCLASSEXW window_class{};
@@ -133,15 +180,24 @@ private:
     }
 
     bool CreateMainWindow(int show_command) {
+        current_dpi_ = GetDpiForSystem();
+        const DWORD style = WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX;
+        RECT window_rect{
+            0,
+            0,
+            ScaleForDpi(current_dpi_, kWindowWidth),
+            ScaleForDpi(current_dpi_, kWindowHeight)};
+        AdjustWindowRectExForDpi(&window_rect, style, FALSE, 0, current_dpi_);
+
         window_ = CreateWindowExW(
             0,
             kWindowClassName,
             kWindowTitle,
-            WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX,
+            style,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            kWindowWidth,
-            kWindowHeight,
+            window_rect.right - window_rect.left,
+            window_rect.bottom - window_rect.top,
             nullptr,
             nullptr,
             instance_,
@@ -187,8 +243,31 @@ private:
             return OnCreate();
         case WM_GETMINMAXINFO: {
             auto* info = reinterpret_cast<MINMAXINFO*>(l_param);
-            info->ptMinTrackSize.x = kWindowMinWidth;
-            info->ptMinTrackSize.y = kWindowMinHeight;
+            RECT min_rect{
+                0,
+                0,
+                Scale(kWindowMinWidth),
+                Scale(kWindowMinHeight)};
+            AdjustWindowRectExForDpi(
+                &min_rect, GetWindowLongW(window_, GWL_STYLE), FALSE, 0, current_dpi_);
+            info->ptMinTrackSize.x = min_rect.right - min_rect.left;
+            info->ptMinTrackSize.y = min_rect.bottom - min_rect.top;
+            return 0;
+        }
+        case WM_DPICHANGED: {
+            current_dpi_ = HIWORD(w_param);
+            auto* suggested = reinterpret_cast<RECT*>(l_param);
+            SetWindowPos(
+                window_,
+                nullptr,
+                suggested->left,
+                suggested->top,
+                suggested->right - suggested->left,
+                suggested->bottom - suggested->top,
+                SWP_NOZORDER | SWP_NOACTIVATE);
+            RefreshFonts();
+            OnSize();
+            InvalidateRect(window_, nullptr, TRUE);
             return 0;
         }
         case WM_SIZE:
@@ -215,7 +294,7 @@ private:
     }
 
     LRESULT OnCreate() {
-        font_ = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+        current_dpi_ = GetDpiForWindow(window_);
         background_brush_ = CreateSolidBrush(RGB(255, 255, 255));
 
         hint_label_ = CreateWindowExW(
@@ -274,11 +353,6 @@ private:
             instance_,
             nullptr);
 
-        SendMessageW(copy_checkbox_, BM_SETCHECK, BST_CHECKED, 0);
-        SendMessageW(hint_label_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
-        SendMessageW(copy_checkbox_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
-        SendMessageW(run_button_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
-
         subtitle_card_.Create(
             window_,
             instance_,
@@ -293,6 +367,9 @@ private:
             L"视频目录",
             L"拖入视频文件夹",
             font_);
+
+        RefreshFonts();
+        SendMessageW(copy_checkbox_, BM_SETCHECK, BST_CHECKED, 0);
 
         subtitle_card_.SetOnChoose([this]() {
             ChooseDirectory(subtitle_card_, L"已选择字幕目录");
@@ -325,26 +402,34 @@ private:
         RECT status_rect{};
         GetWindowRect(status_bar_, &status_rect);
         const int status_height = status_rect.bottom - status_rect.top;
-        const int content_width = client_rect.right - (kMargin * 2);
-        const int bottom_actions_top = client_rect.bottom - status_height - kMargin - kRunButtonHeight;
+        const int margin = Scale(kMargin);
+        const int top_hint_height = Scale(kTopHintHeight);
+        const int card_height = Scale(kCardHeight);
+        const int card_spacing = Scale(kCardSpacing);
+        const int bottom_section_gap = Scale(kBottomSectionGap);
+        const int checkbox_height = Scale(kCheckboxHeight);
+        const int run_button_width = Scale(kRunButtonWidth);
+        const int run_button_height = Scale(kRunButtonHeight);
+        const int content_width = client_rect.right - (margin * 2);
+        const int bottom_actions_top = client_rect.bottom - status_height - margin - run_button_height;
 
-        int y = kMargin;
-        MoveWindow(hint_label_, kMargin, y, content_width, kTopHintHeight, TRUE);
+        int y = margin;
+        MoveWindow(hint_label_, margin, y, content_width, top_hint_height, TRUE);
 
-        y += kTopHintHeight + 14;
-        subtitle_card_.SetBounds(RECT{kMargin, y, kMargin + content_width, y + kCardHeight});
+        y += top_hint_height + Scale(14);
+        subtitle_card_.SetBounds(RECT{margin, y, margin + content_width, y + card_height});
 
-        y += kCardHeight + kCardSpacing;
-        video_card_.SetBounds(RECT{kMargin, y, kMargin + content_width, y + kCardHeight});
+        y += card_height + card_spacing;
+        video_card_.SetBounds(RECT{margin, y, margin + content_width, y + card_height});
 
-        const int action_top = std::max(y + kCardHeight + kBottomSectionGap, bottom_actions_top);
-        MoveWindow(copy_checkbox_, kMargin, action_top + 6, 200, kCheckboxHeight, TRUE);
+        const int action_top = std::max(y + card_height + bottom_section_gap, bottom_actions_top);
+        MoveWindow(copy_checkbox_, margin, action_top + Scale(6), Scale(200), checkbox_height, TRUE);
         MoveWindow(
             run_button_,
-            client_rect.right - kMargin - kRunButtonWidth,
+            client_rect.right - margin - run_button_width,
             action_top,
-            kRunButtonWidth,
-            kRunButtonHeight,
+            run_button_width,
+            run_button_height,
             TRUE);
     }
 
@@ -445,6 +530,10 @@ private:
         if (background_brush_ != nullptr) {
             DeleteObject(background_brush_);
             background_brush_ = nullptr;
+        }
+        if (font_ != nullptr) {
+            DeleteObject(font_);
+            font_ = nullptr;
         }
     }
 };
