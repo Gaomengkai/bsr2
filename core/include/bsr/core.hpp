@@ -16,6 +16,12 @@ struct RenameOperation {
     std::filesystem::path copied_subtitle_path;
 };
 
+// Optional behaviors that affect how renamed subtitle filenames are generated.
+struct RenameOptions {
+    bool will_copy = true;
+    std::string extra_suffix;
+};
+
 using VideoMap = std::unordered_map<std::string, std::filesystem::path>;
 using SubtitleMap = std::unordered_map<std::string, std::vector<std::filesystem::path>>;
 
@@ -39,9 +45,19 @@ SubtitleMap find_subtitles(const std::filesystem::path& path);
 std::vector<RenameOperation> plan_renames(
     const std::filesystem::path& video_path,
     const std::filesystem::path& subtitle_path,
+    const RenameOptions& options);
+
+std::vector<RenameOperation> plan_renames(
+    const std::filesystem::path& video_path,
+    const std::filesystem::path& subtitle_path,
     bool will_copy = true);
 
 // Execute planned subtitle copies in the subtitle directory and optionally next to videos.
+std::vector<std::filesystem::path> rename_subtitles(
+    const std::filesystem::path& video_path,
+    const std::filesystem::path& subtitle_path,
+    const RenameOptions& options);
+
 std::vector<std::filesystem::path> rename_subtitles(
     const std::filesystem::path& video_path,
     const std::filesystem::path& subtitle_path,

@@ -64,6 +64,28 @@ void replace_all(std::string& text, const std::string& from, const std::string& 
     }
 }
 
+std::string trim_ascii_whitespace(std::string value) {
+    auto is_not_space = [](unsigned char ch) {
+        return !std::isspace(ch);
+    };
+
+    const auto begin = std::find_if(value.begin(), value.end(), is_not_space);
+    if (begin == value.end()) {
+        return {};
+    }
+
+    const auto end = std::find_if(value.rbegin(), value.rend(), is_not_space).base();
+    return std::string(begin, end);
+}
+
+std::string normalize_extra_suffix(std::string value) {
+    value = trim_ascii_whitespace(std::move(value));
+    while (!value.empty() && value.front() == '.') {
+        value.erase(value.begin());
+    }
+    return value;
+}
+
 bool is_preserved_subtitle_suffix_token(const std::string& token) {
     static const std::regex kSubtitleLanguagePattern("[SsTt][Cc]");
     return token.size() <= 4 || std::regex_search(token, kSubtitleLanguagePattern);
@@ -81,7 +103,8 @@ std::vector<std::string> extract_preserved_language_tokens(const std::filesystem
 
 std::filesystem::path build_subtitle_name(
     const std::filesystem::path& video_path,
-    const std::filesystem::path& subtitle_path) {
+    const std::filesystem::path& subtitle_path,
+    const RenameOptions& options) {
     std::vector<std::string> suffix_tokens;
     std::vector<std::string> language_tokens = extract_preserved_language_tokens(subtitle_path);
     std::string filename = path_to_utf8_string(subtitle_path.filename());
@@ -119,6 +142,11 @@ std::filesystem::path build_subtitle_name(
         suffix_tokens.begin(),
         language_tokens.begin(),
         language_tokens.end());
+
+    const std::string extra_suffix = normalize_extra_suffix(options.extra_suffix);
+    if (!extra_suffix.empty()) {
+        suffix_tokens.insert(suffix_tokens.begin(), extra_suffix);
+    }
 
     std::string joined_suffix;
     for (std::size_t i = 0; i < suffix_tokens.size(); ++i) {
@@ -334,7 +362,7 @@ SubtitleMap find_subtitles(const std::filesystem::path& path) {
 std::vector<RenameOperation> plan_renames(
     const std::filesystem::path& video_path,
     const std::filesystem::path& subtitle_path,
-    bool will_copy) {
+    const RenameOptions& options) {
     VideoMap videos = find_videos(video_path);
     SubtitleMap subtitles = find_subtitles(subtitle_path);
 
@@ -345,13 +373,13 @@ std::vector<RenameOperation> plan_renames(
             continue;
         }
         for (const auto& subtitle : subtitle_it->second) {
-            std::filesystem::path file_name = build_subtitle_name(video, subtitle);
+            std::filesystem::path file_name = build_subtitle_name(video, subtitle, options);
             RenameOperation operation;
             operation.key = key;
             operation.video_path = video;
             operation.subtitle_path = subtitle;
             operation.renamed_subtitle_path = subtitle.parent_path() / file_name;
-            if (will_copy) {
+            if (options.will_copy) {
                 operation.copied_subtitle_path = video.parent_path() / file_name;
             }
             operations.push_back(std::move(operation));
@@ -360,13 +388,22 @@ std::vector<RenameOperation> plan_renames(
     return operations;
 }
 
-std::vector<std::filesystem::path> rename_subtitles(
+std::vector<RenameOperation> plan_renames(
     const std::filesystem::path& video_path,
     const std::filesystem::path& subtitle_path,
     bool will_copy) {
-    std::vector<RenameOperation> operations = plan_renames(video_path, subtitle_path, will_copy);
+    RenameOptions options;
+    options.will_copy = will_copy;
+    return plan_renames(video_path, subtitle_path, options);
+}
+
+std::vector<std::filesystem::path> rename_subtitles(
+    const std::filesystem::path& video_path,
+    const std::filesystem::path& subtitle_path,
+    const RenameOptions& options) {
+    std::vector<RenameOperation> operations = plan_renames(video_path, subtitle_path, options);
     std::vector<std::filesystem::path> created_paths;
-    created_paths.reserve(operations.size() * (will_copy ? 2U : 1U));
+    created_paths.reserve(operations.size() * (options.will_copy ? 2U : 1U));
 
     for (const auto& operation : operations) {
         if (!is_same_path(operation.subtitle_path, operation.renamed_subtitle_path)) {
@@ -377,7 +414,7 @@ std::vector<std::filesystem::path> rename_subtitles(
         }
         created_paths.push_back(operation.renamed_subtitle_path);
 
-        if (will_copy && !operation.copied_subtitle_path.empty()) {
+        if (options.will_copy && !operation.copied_subtitle_path.empty()) {
             if (!is_same_path(operation.subtitle_path, operation.copied_subtitle_path)) {
                 std::filesystem::copy_file(
                     operation.subtitle_path,
@@ -389,6 +426,15 @@ std::vector<std::filesystem::path> rename_subtitles(
     }
 
     return created_paths;
+}
+
+std::vector<std::filesystem::path> rename_subtitles(
+    const std::filesystem::path& video_path,
+    const std::filesystem::path& subtitle_path,
+    bool will_copy) {
+    RenameOptions options;
+    options.will_copy = will_copy;
+    return rename_subtitles(video_path, subtitle_path, options);
 }
 
 }  // namespace bsr::core

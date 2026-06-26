@@ -158,6 +158,38 @@ void test_rename_subtitles_preserves_cht_tag() {
     expect(fs::exists(renamed_subtitle), "Renamed CHT subtitle missing");
 }
 
+void test_rename_subtitles_adds_custom_suffix() {
+    TempDir root;
+    const fs::path videos = root.path / "videos";
+    const fs::path subtitles = root.path / "subtitles";
+    fs::create_directories(videos);
+    fs::create_directories(subtitles);
+
+    const std::vector<std::string> episodes = {"01", "03", "05"};
+    for (const auto& episode : episodes) {
+        write_text(
+            videos / ("Slime Taoshite 300-nen S2 - " + episode + ".mkv"),
+            "video-" + episode);
+        write_text(
+            subtitles / ("[Sakurato] Slime Taoshite 300-nen, Shiranai Uchi ni Level Max ni Nattemashita Sono Ni [" +
+                          episode + "].ass"),
+            "subtitle-" + episode);
+    }
+
+    bsr::core::RenameOptions options;
+    options.will_copy = false;
+    options.extra_suffix = "  .CHS  ";
+
+    const auto created = bsr::core::rename_subtitles(videos, subtitles, options);
+    expect(created.size() == episodes.size(), "Custom suffix rename should report every subtitle");
+
+    for (const auto& episode : episodes) {
+        const fs::path renamed_subtitle =
+            subtitles / ("Slime Taoshite 300-nen S2 - " + episode + ".CHS.ass");
+        expect(fs::exists(renamed_subtitle), "Renamed subtitle with custom suffix missing");
+    }
+}
+
 // Subtitle: [Sakurato] Slime Taoshite 300-nen, Shiranai Uchi ni Level Max ni Nattemashita Sono Ni [01][HEVC-10bit 1080p AAC][CHS].ass
 // Video: Slime Taoshite 300-nen S2 - 01.mkv
 // Expected renamed subtitle: Slime Taoshite 300-nen S2 - 01.CHS.ass
@@ -256,6 +288,7 @@ int main() {
         test_rename_subtitles_copies_to_both_locations();
         test_rename_subtitles_silently_skips_same_name_copy();
         test_rename_subtitles_preserves_cht_tag();
+        test_rename_subtitles_adds_custom_suffix();
         test_generated_slime_s2_subtitles();
         test_single_digit_subtitles_match_zero_padded_videos();
         test_unicode_bangumi_names_on_windows();
