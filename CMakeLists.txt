@@ -7,4 +7,6 @@ add_subdirectory(core)
 if(WIN32)
     add_subdirectory(win-ui)
 endif()
-
+if(APPLE)
+    add_subdirectory(mac-ui)
+endif()
