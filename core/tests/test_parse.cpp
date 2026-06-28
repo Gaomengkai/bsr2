@@ -247,6 +247,43 @@ void test_single_digit_subtitles_match_zero_padded_videos() {
     }
 }
 
+void test_oad_episode_tokens_match_correctly() {
+    TempDir root;
+    const fs::path videos = root.path / LR"([VCB-Studio] Minami-ke OAD [Ma10p_720p])";
+    const fs::path subtitles = root.path / LR"(简体)";
+    fs::create_directories(videos);
+    fs::create_directories(subtitles);
+
+    struct EpisodeSample {
+        const char* title;
+        const char* episode;
+    };
+
+    const std::vector<EpisodeSample> samples = {
+        {"Minami-ke Betsubara", "OAD01"},
+        {"Minami-ke Omatase", "OAD02"},
+        {"Minami-ke Natsuyasumi", "OAD03"},
+    };
+
+    for (const auto& sample : samples) {
+        const std::string base_name =
+            std::string("[VCB-Studio] ") + sample.title + " [" + sample.episode +
+            "][Ma10p_720p][x265_ac3]";
+        write_text(videos / (base_name + ".mkv"), std::string("video-") + sample.episode);
+        write_text(subtitles / (base_name + ".ass"), std::string("subtitle-") + sample.episode);
+    }
+
+    const auto created = bsr::core::rename_subtitles(videos, subtitles, false);
+    expect(created.size() == samples.size(), "Expected one renamed subtitle per OAD episode");
+
+    for (const auto& sample : samples) {
+        const fs::path expected =
+            subtitles / (std::string("[VCB-Studio] ") + sample.title + " [" + sample.episode +
+                          "][Ma10p_720p][x265_ac3].ass");
+        expect(fs::exists(expected), "Expected renamed OAD subtitle missing");
+    }
+}
+
 void test_unicode_bangumi_names_on_windows() {
     TempDir root;
     const fs::path videos = root.path / LR"(【恋如雨止】[DMG] 恋は雨上がりのように [BDBOX][Ⅰ-Ⅱ])";
@@ -291,6 +328,7 @@ int main() {
         test_rename_subtitles_adds_custom_suffix();
         test_generated_slime_s2_subtitles();
         test_single_digit_subtitles_match_zero_padded_videos();
+        test_oad_episode_tokens_match_correctly();
         test_unicode_bangumi_names_on_windows();
     } catch (const std::exception& ex) {
         std::cerr << ex.what() << '\n';
