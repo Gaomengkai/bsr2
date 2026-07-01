@@ -114,6 +114,20 @@ bool choose_folder(HWND owner, std::filesystem::path& out_path) {
     return SUCCEEDED(hr) && !out_path.empty();
 }
 
+std::wstring describe_selection(const DirectoryCard::Selection& selection,
+                                const wchar_t* directory_label,
+                                const wchar_t* file_label) {
+    switch (selection.kind) {
+    case DirectoryCard::Selection::Kind::Directory:
+        return directory_label;
+    case DirectoryCard::Selection::Kind::Files:
+        return std::wstring(file_label) + L"（仅当前拖入）";
+    case DirectoryCard::Selection::Kind::None:
+    default:
+        return L"";
+    }
+}
+
 }  // namespace
 
 class AppWindow::Impl {
@@ -328,7 +342,7 @@ private:
         hint_label_ = CreateWindowExW(
             0,
             L"STATIC",
-            L"将文件夹拖到下方卡片中，或点击卡片右侧的“浏览...”选择目录。",
+            L"可拖入文件夹，或直接拖入一批散装视频/字幕文件；拖入散装文件时仅处理当前这批文件。",
             WS_CHILD | WS_VISIBLE,
             0,
             0,
@@ -400,14 +414,14 @@ private:
             instance_,
             kIdSubtitleCard,
             L"字幕目录",
-            L"拖入字幕文件夹",
+            L"拖入字幕文件夹或散装字幕文件",
             font_);
         video_card_.Create(
             window_,
             instance_,
             kIdVideoCard,
             L"视频目录",
-            L"拖入视频文件夹",
+            L"拖入视频文件夹或散装视频文件",
             font_);
 
         RefreshFonts();
@@ -419,12 +433,12 @@ private:
         video_card_.SetOnChoose([this]() {
             ChooseDirectory(video_card_, L"已选择视频目录");
         });
-        subtitle_card_.SetOnPathChanged([this](const std::filesystem::path&) {
-            SetStatus(L"已填充字幕目录");
+        subtitle_card_.SetOnSelectionChanged([this](const DirectoryCard::Selection& selection) {
+            SetStatus(describe_selection(selection, L"已填充字幕目录", L"已填充字幕文件"));
             UpdateRunAvailability();
         });
-        video_card_.SetOnPathChanged([this](const std::filesystem::path&) {
-            SetStatus(L"已填充视频目录");
+        video_card_.SetOnSelectionChanged([this](const DirectoryCard::Selection& selection) {
+            SetStatus(describe_selection(selection, L"已填充视频目录", L"已填充视频文件"));
             UpdateRunAvailability();
         });
 
@@ -520,7 +534,7 @@ private:
     }
 
     bool ReadyToRun() const {
-        return !running_ && subtitle_card_.HasPath() && video_card_.HasPath();
+        return !running_ && subtitle_card_.HasSelection() && video_card_.HasSelection();
     }
 
     void SetRunning(bool running) {
@@ -537,27 +551,17 @@ private:
     }
 
     void RunRename() {
-        const std::filesystem::path subtitle_path = subtitle_card_.path();
-        const std::filesystem::path video_path = video_card_.path();
+        const DirectoryCard::Selection& subtitle_selection = subtitle_card_.selection();
+        const DirectoryCard::Selection& video_selection = video_card_.selection();
         bsr::core::RenameOptions options;
         options.will_copy = SendMessageW(copy_checkbox_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         if (advanced_options_.add_suffix_enabled) {
             options.extra_suffix = wide_to_utf8(advanced_options_.extra_suffix);
         }
 
-        if (subtitle_path.empty() || video_path.empty()) {
-            ShowError(L"请先选择字幕目录和视频目录。");
-            SetStatus(L"缺少目录");
-            return;
-        }
-        if (!std::filesystem::exists(subtitle_path) || !std::filesystem::is_directory(subtitle_path)) {
-            ShowError(L"字幕目录不存在。");
-            SetStatus(L"字幕目录不存在");
-            return;
-        }
-        if (!std::filesystem::exists(video_path) || !std::filesystem::is_directory(video_path)) {
-            ShowError(L"视频目录不存在。");
-            SetStatus(L"视频目录不存在");
+        if (!subtitle_card_.HasSelection() || !video_card_.HasSelection()) {
+            ShowError(L"请先选择字幕输入和视频输入。");
+            SetStatus(L"缺少输入");
             return;
         }
 
@@ -565,13 +569,25 @@ private:
         SetStatus(L"正在处理...");
 
         try {
+            const std::vector<std::filesystem::path> subtitle_files =
+                subtitle_selection.kind == DirectoryCard::Selection::Kind::Files
+                    ? subtitle_selection.files
+                    : bsr::core::list_subtitle_files(subtitle_selection.directory);
+            const std::vector<std::filesystem::path> video_files =
+                video_selection.kind == DirectoryCard::Selection::Kind::Files
+                    ? video_selection.files
+                    : bsr::core::list_video_files(video_selection.directory);
             const std::vector<std::filesystem::path> created =
-                bsr::core::rename_subtitles(video_path, subtitle_path, options);
+                bsr::core::rename_subtitles(video_files, subtitle_files, options);
 
             if (created.empty()) {
                 SetStatus(L"没有找到可匹配的字幕");
             } else {
-                SetStatus(L"完成 " + std::to_wstring(created.size()) + L" 个文件");
+                auto created_count = static_cast<int>(created.size());
+                if (options.will_copy && created_count % 2 == 0) {
+                    created_count /= 2;
+                }
+                SetStatus(L"完成 " + std::to_wstring(created_count) + L" 个文件");
             }
         } catch (const std::exception& ex) {
             ShowError(utf8_to_wide(ex.what()));

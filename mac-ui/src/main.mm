@@ -555,8 +555,11 @@ void set_hidden(NSView* view, BOOL hidden) {
             const std::vector<std::filesystem::path> created =
                 bsr::core::rename_subtitles(videoPath, subtitlePath, willCopy);
             if (!created.empty()) {
-                statusMessage = [NSString stringWithFormat:@"已处理 %lu 个文件",
-                                 static_cast<unsigned long>(created.size())];
+                unsigned long createdCount = static_cast<unsigned long>(created.size());
+                if (willCopy && createdCount % 2UL == 0) {
+                    createdCount /= 2UL;
+                }
+                statusMessage = [NSString stringWithFormat:@"已处理 %lu 个文件", createdCount];
             }
         } catch (const std::exception& ex) {
             errorMessage = utf8_to_nsstring(ex.what());

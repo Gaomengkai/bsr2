@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace win_ui {
 namespace {
@@ -63,7 +64,7 @@ COLORREF body_color(bool enabled, bool has_path) {
     return has_path ? RGB(78, 84, 92) : RGB(138, 144, 152);
 }
 
-std::optional<std::filesystem::path> first_directory_from_data_object(IDataObject* data_object) {
+std::optional<DirectoryCard::Selection> selection_from_data_object(IDataObject* data_object) {
     if (data_object == nullptr) {
         return std::nullopt;
     }
@@ -79,7 +80,7 @@ std::optional<std::filesystem::path> first_directory_from_data_object(IDataObjec
         return std::nullopt;
     }
 
-    std::optional<std::filesystem::path> result;
+    std::vector<std::filesystem::path> file_paths;
     HDROP drop = static_cast<HDROP>(GlobalLock(medium.hGlobal));
     if (drop != nullptr) {
         const UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
@@ -91,15 +92,27 @@ std::optional<std::filesystem::path> first_directory_from_data_object(IDataObjec
 
             std::filesystem::path path(buffer);
             if (std::filesystem::is_directory(path)) {
-                result = path;
-                break;
+                DirectoryCard::Selection selection;
+                selection.kind = DirectoryCard::Selection::Kind::Directory;
+                selection.directory = std::move(path);
+                GlobalUnlock(medium.hGlobal);
+                ReleaseStgMedium(&medium);
+                return selection;
             }
+            file_paths.push_back(std::move(path));
         }
         GlobalUnlock(medium.hGlobal);
     }
 
     ReleaseStgMedium(&medium);
-    return result;
+    if (file_paths.empty()) {
+        return std::nullopt;
+    }
+
+    DirectoryCard::Selection selection;
+    selection.kind = DirectoryCard::Selection::Kind::Files;
+    selection.files = std::move(file_paths);
+    return selection;
 }
 
 class MemoryPaintBuffer {
@@ -175,24 +188,24 @@ public:
         DWORD,
         POINTL,
         DWORD* effect) override {
-        candidate_path_ = first_directory_from_data_object(data_object);
-        owner_->SetDropHighlighted(candidate_path_.has_value());
+        candidate_selection_ = selection_from_data_object(data_object);
+        owner_->SetDropHighlighted(candidate_selection_.has_value());
         if (effect != nullptr) {
-            *effect = candidate_path_.has_value() ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+            *effect = candidate_selection_.has_value() ? DROPEFFECT_COPY : DROPEFFECT_NONE;
         }
         return S_OK;
     }
 
     HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINTL, DWORD* effect) override {
-        owner_->SetDropHighlighted(candidate_path_.has_value());
+        owner_->SetDropHighlighted(candidate_selection_.has_value());
         if (effect != nullptr) {
-            *effect = candidate_path_.has_value() ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+            *effect = candidate_selection_.has_value() ? DROPEFFECT_COPY : DROPEFFECT_NONE;
         }
         return S_OK;
     }
 
     HRESULT STDMETHODCALLTYPE DragLeave() override {
-        candidate_path_.reset();
+        candidate_selection_.reset();
         owner_->SetDropHighlighted(false);
         return S_OK;
     }
@@ -202,19 +215,18 @@ public:
         DWORD,
         POINTL,
         DWORD* effect) override {
-        auto path = first_directory_from_data_object(data_object);
+        auto selection = selection_from_data_object(data_object);
         owner_->SetDropHighlighted(false);
-        candidate_path_.reset();
+        candidate_selection_.reset();
 
-        if (!path.has_value()) {
+        if (!selection.has_value()) {
             if (effect != nullptr) {
                 *effect = DROPEFFECT_NONE;
             }
             return S_OK;
         }
 
-        owner_->SetPath(*path);
-        owner_->NotifyPathChanged();
+        owner_->SetSelection(*selection);
         if (effect != nullptr) {
             *effect = DROPEFFECT_COPY;
         }
@@ -224,7 +236,7 @@ public:
 private:
     DirectoryCard* owner_ = nullptr;
     ULONG ref_count_ = 1;
-    std::optional<std::filesystem::path> candidate_path_;
+    std::optional<DirectoryCard::Selection> candidate_selection_;
 };
 
 DirectoryCard::DirectoryCard() = default;
@@ -311,22 +323,57 @@ void DirectoryCard::SetBounds(const RECT& bounds) {
         TRUE);
 }
 
-void DirectoryCard::SetPath(const std::filesystem::path& path) {
-    path_ = path;
+void DirectoryCard::SetSelection(const Selection& selection) {
+    selection_ = selection;
+    NotifySelectionChanged();
     InvalidateRect(hwnd_, nullptr, TRUE);
+}
+
+void DirectoryCard::SetDirectoryPath(const std::filesystem::path& path) {
+    Selection selection;
+    selection.kind = Selection::Kind::Directory;
+    selection.directory = path;
+    SetSelection(selection);
+}
+
+void DirectoryCard::SetFilePaths(const std::vector<std::filesystem::path>& paths) {
+    Selection selection;
+    selection.kind = paths.empty() ? Selection::Kind::None : Selection::Kind::Files;
+    selection.files = paths;
+    SetSelection(selection);
+}
+
+void DirectoryCard::SetPath(const std::filesystem::path& path) {
+    SetDirectoryPath(path);
 }
 
 void DirectoryCard::ClearPath() {
-    path_.clear();
+    selection_ = {};
     InvalidateRect(hwnd_, nullptr, TRUE);
 }
 
+const DirectoryCard::Selection& DirectoryCard::selection() const {
+    return selection_;
+}
+
 const std::filesystem::path& DirectoryCard::path() const {
-    return path_;
+    return selection_.directory;
 }
 
 bool DirectoryCard::HasPath() const {
-    return !path_.empty();
+    return HasSelection();
+}
+
+bool DirectoryCard::HasSelection() const {
+    switch (selection_.kind) {
+    case Selection::Kind::Directory:
+        return !selection_.directory.empty();
+    case Selection::Kind::Files:
+        return !selection_.files.empty();
+    case Selection::Kind::None:
+    default:
+        return false;
+    }
 }
 
 void DirectoryCard::SetEnabled(bool enabled) {
@@ -357,6 +404,10 @@ HWND DirectoryCard::hwnd() const {
 
 void DirectoryCard::SetOnChoose(std::function<void()> callback) {
     on_choose_ = std::move(callback);
+}
+
+void DirectoryCard::SetOnSelectionChanged(std::function<void(const Selection&)> callback) {
+    on_selection_changed_ = std::move(callback);
 }
 
 void DirectoryCard::SetOnPathChanged(std::function<void(const std::filesystem::path&)> callback) {
@@ -559,14 +610,40 @@ void DirectoryCard::NotifyChooseRequested() {
     on_choose_();
 }
 
+void DirectoryCard::NotifySelectionChanged() {
+    if (!HasSelection()) {
+        return;
+    }
+    if (on_selection_changed_ != nullptr) {
+        on_selection_changed_(selection_);
+    }
+    NotifyPathChanged();
+}
+
 void DirectoryCard::NotifyPathChanged() {
-    if (on_path_changed_ != nullptr) {
-        on_path_changed_(path_);
+    if (on_path_changed_ != nullptr &&
+        (selection_.kind == Selection::Kind::Directory || selection_.kind == Selection::Kind::None)) {
+        on_path_changed_(selection_.directory);
     }
 }
 
 std::wstring DirectoryCard::DisplayText() const {
-    return HasPath() ? path_.native() : placeholder_;
+    return HasSelection() ? SelectionSummary() : placeholder_;
+}
+
+std::wstring DirectoryCard::SelectionSummary() const {
+    switch (selection_.kind) {
+    case Selection::Kind::Directory:
+        return selection_.directory.native();
+    case Selection::Kind::Files:
+        if (selection_.files.size() == 1) {
+            return selection_.files.front().filename().native();
+        }
+        return std::to_wstring(selection_.files.size()) + L" 个文件";
+    case Selection::Kind::None:
+    default:
+        return placeholder_;
+    }
 }
 
 bool DirectoryCard::IsInteractive() const {

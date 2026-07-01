@@ -97,6 +97,61 @@ void test_finders_group_by_episode() {
     expect(subtitle_map.count("02") == 1, "Episode 02 subtitle missing");
 }
 
+void test_explicit_file_lists_only_match_selected_files() {
+    TempDir root;
+    const fs::path videos = root.path / "videos";
+    const fs::path subtitles = root.path / "subtitles";
+    fs::create_directories(videos);
+    fs::create_directories(subtitles);
+
+    const fs::path selected_video_1 = videos / "[VCB-Studio] Test Show [01][Ma10p_1080p][x265].mkv";
+    const fs::path selected_video_2 = videos / "[VCB-Studio] Test Show [02][Ma10p_1080p][x265].mkv";
+    const fs::path ignored_video = videos / "[VCB-Studio] Test Show [03][Ma10p_1080p][x265].mkv";
+    const fs::path selected_subtitle_1 = subtitles / "[Sub][Test Show][01][CHS].ass";
+    const fs::path selected_subtitle_2 = subtitles / "[Sub][Test Show][02][CHS].ass";
+    const fs::path ignored_subtitle = subtitles / "[Sub][Test Show][03][CHS].ass";
+
+    write_text(selected_video_1, "video-1");
+    write_text(selected_video_2, "video-2");
+    write_text(ignored_video, "video-3");
+    write_text(selected_subtitle_1, "subtitle-1");
+    write_text(selected_subtitle_2, "subtitle-2");
+    write_text(ignored_subtitle, "subtitle-3");
+
+    const std::vector<fs::path> video_files = {selected_video_1, selected_video_2};
+    const std::vector<fs::path> subtitle_files = {selected_subtitle_1, selected_subtitle_2};
+    const auto operations = bsr::core::plan_renames(video_files, subtitle_files, false);
+
+    expect(operations.size() == 2, "Explicit file list should only plan selected matches");
+    for (const auto& operation : operations) {
+        expect(operation.key != "03", "Unselected episode should not be matched");
+    }
+
+    const auto created = bsr::core::rename_subtitles(video_files, subtitle_files, false);
+    expect(created.size() == 2, "Explicit file list should only rename selected subtitles");
+    expect(!fs::exists(subtitles / "[VCB-Studio] Test Show [03][Ma10p_1080p][x265].CHS.ass"),
+           "Unselected subtitle should not be renamed");
+}
+
+void test_find_videos_rejects_duplicate_episode_keys() {
+    TempDir root;
+    const fs::path videos = root.path / "videos";
+    fs::create_directories(videos);
+
+    const fs::path first = videos / "Test Show - 01 [1080p].mkv";
+    const fs::path second = videos / "Test Show [01][Ma10p_1080p].mkv";
+    write_text(first, "video-1");
+    write_text(second, "video-2");
+
+    bool threw = false;
+    try {
+        (void)bsr::core::find_videos(std::vector<fs::path>{first, second});
+    } catch (const std::runtime_error& ex) {
+        threw = std::string(ex.what()).find("Multiple video files matched the same episode key") != std::string::npos;
+    }
+    expect(threw, "Duplicate video episode keys should throw");
+}
+
 void test_rename_subtitles_copies_to_both_locations() {
     TempDir root;
     const fs::path videos = root.path / "videos";
@@ -116,6 +171,27 @@ void test_rename_subtitles_copies_to_both_locations() {
     expect(created.size() == 2, "rename_subtitles should report both created files");
     expect(fs::exists(renamed_subtitle), "Renamed subtitle missing");
     expect(fs::exists(copied_subtitle), "Copied subtitle missing");
+}
+
+void test_rename_subtitles_does_not_report_skip_existing_as_created() {
+    TempDir root;
+    const fs::path videos = root.path / "videos";
+    const fs::path subtitles = root.path / "subtitles";
+    fs::create_directories(videos);
+    fs::create_directories(subtitles);
+
+    const fs::path video = videos / "[VCB-Studio] Sonny Boy [01][Ma10p_1080p][x265_flac].mkv";
+    const fs::path subtitle = subtitles / "[XKsub][Sonny Boy][01][CHS].sc.ass";
+    const fs::path renamed_subtitle = subtitles / "[VCB-Studio] Sonny Boy [01][Ma10p_1080p][x265_flac].CHS.sc.ass";
+    const fs::path copied_subtitle = videos / "[VCB-Studio] Sonny Boy [01][Ma10p_1080p][x265_flac].CHS.sc.ass";
+
+    write_text(video, "video");
+    write_text(subtitle, "subtitle");
+    write_text(renamed_subtitle, "existing-subtitle-copy");
+    write_text(copied_subtitle, "existing-video-copy");
+
+    const auto created = bsr::core::rename_subtitles(videos, subtitles, true);
+    expect(created.empty(), "Skip-existing outputs should not be reported as created");
 }
 
 void test_rename_subtitles_silently_skips_same_name_copy() {
@@ -322,7 +398,10 @@ int main() {
         test_match_numbers_supports_single_digit_subtitle_names();
         test_reduce_name_uses_most_distinct_column();
         test_finders_group_by_episode();
+        test_explicit_file_lists_only_match_selected_files();
+        test_find_videos_rejects_duplicate_episode_keys();
         test_rename_subtitles_copies_to_both_locations();
+        test_rename_subtitles_does_not_report_skip_existing_as_created();
         test_rename_subtitles_silently_skips_same_name_copy();
         test_rename_subtitles_preserves_cht_tag();
         test_rename_subtitles_adds_custom_suffix();

@@ -32,6 +32,34 @@ bool contains(const std::vector<std::string>& values, const std::string& needle)
     return std::find(values.begin(), values.end(), needle) != values.end();
 }
 
+std::string path_extension_lower(const std::filesystem::path& path) {
+    std::string suffix = path.extension().string();
+    if (!suffix.empty() && suffix.front() == '.') {
+        suffix.erase(suffix.begin());
+    }
+    return to_lower(std::move(suffix));
+}
+
+bool is_regular_supported_file(
+    const std::filesystem::path& path,
+    const std::vector<std::string>& suffixes) {
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path, ec)) {
+        return false;
+    }
+    return contains(suffixes, path_extension_lower(path));
+}
+
+void ensure_file_exists(const std::filesystem::path& path) {
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) {
+        throw std::filesystem::filesystem_error(
+            "File does not exist",
+            path,
+            std::make_error_code(std::errc::no_such_file_or_directory));
+    }
+}
+
 std::string path_to_utf8_string(const std::filesystem::path& path) {
     return path.u8string();
 }
@@ -172,6 +200,95 @@ void ensure_directory_exists(const std::filesystem::path& path, const MapT&) {
     }
 }
 
+std::vector<std::filesystem::path> collect_supported_files(
+    const std::filesystem::path& path,
+    const std::vector<std::string>& suffixes) {
+    ensure_directory_exists(path, 0);
+
+    std::vector<std::filesystem::path> files;
+    for (const auto& entry : std::filesystem::directory_iterator(path)) {
+        const std::filesystem::path entry_path = entry.path();
+        if (is_regular_supported_file(entry_path, suffixes)) {
+            files.push_back(entry_path);
+        }
+    }
+    return files;
+}
+
+struct MatchedFiles {
+    std::vector<std::string> keys;
+    std::vector<std::filesystem::path> files;
+};
+
+MatchedFiles collect_matched_files(
+    const std::vector<std::filesystem::path>& files,
+    const std::vector<std::string>& suffixes,
+    const char* no_match_message) {
+    std::vector<std::vector<std::string>> matched_non_empty;
+    std::vector<std::filesystem::path> files_non_empty;
+    matched_non_empty.reserve(files.size());
+    files_non_empty.reserve(files.size());
+
+    for (const auto& file : files) {
+        ensure_file_exists(file);
+        if (!std::filesystem::is_regular_file(file)) {
+            continue;
+        }
+        if (!contains(suffixes, path_extension_lower(file))) {
+            continue;
+        }
+
+        std::vector<std::string> matches = match_numbers(path_to_utf8_string(file.stem()));
+        if (!matches.empty()) {
+            matched_non_empty.push_back(std::move(matches));
+            files_non_empty.push_back(file);
+        }
+    }
+
+    if (matched_non_empty.empty()) {
+        throw std::runtime_error(no_match_message);
+    }
+
+    MatchedFiles result;
+    result.keys = reduce_name(matched_non_empty);
+    result.files = std::move(files_non_empty);
+    return result;
+}
+
+template <typename ResultMap, typename Inserter>
+ResultMap build_matched_map(
+    const MatchedFiles& matched,
+    Inserter&& inserter) {
+    ResultMap result;
+    for (std::size_t i = 0; i < matched.keys.size(); ++i) {
+        inserter(result, matched.keys[i], matched.files[i]);
+    }
+    return result;
+}
+
+bool copy_if_needed(
+    const std::filesystem::path& source,
+    const std::filesystem::path& destination) {
+    if (is_same_path(source, destination)) {
+        return false;
+    }
+
+    std::error_code ec;
+    const bool copied = std::filesystem::copy_file(
+        source,
+        destination,
+        std::filesystem::copy_options::skip_existing,
+        ec);
+    if (ec) {
+        throw std::filesystem::filesystem_error(
+            "Failed to copy subtitle file",
+            source,
+            destination,
+            ec);
+    }
+    return copied;
+}
+
 }  // namespace
 
 std::vector<std::string> match_numbers(const std::string& text) {
@@ -278,93 +395,57 @@ std::vector<std::string> name_reducer(const std::vector<std::string>& names) {
     return reduce_name(parsed);
 }
 
+std::vector<std::filesystem::path> list_video_files(const std::filesystem::path& path) {
+    return collect_supported_files(path, kVideoSuffixes);
+}
+
+std::vector<std::filesystem::path> list_subtitle_files(const std::filesystem::path& path) {
+    return collect_supported_files(path, kSubtitleSuffixes);
+}
+
+VideoMap find_videos(const std::vector<std::filesystem::path>& files) {
+    const MatchedFiles matched =
+        collect_matched_files(files, kVideoSuffixes, "No matched numbers found in video file names.");
+    return build_matched_map<VideoMap>(
+        matched,
+        [](VideoMap& result, const std::string& key, const std::filesystem::path& file) {
+            auto it = result.find(key);
+            if (it != result.end()) {
+                throw std::runtime_error(
+                    "Multiple video files matched the same episode key \"" + key +
+                    "\": " + path_to_utf8_string(it->second.filename()) + " and " +
+                    path_to_utf8_string(file.filename()));
+            }
+            result[key] = file;
+        });
+}
+
 VideoMap find_videos(const std::filesystem::path& path) {
-    ensure_directory_exists(path, 0);
+    return find_videos(list_video_files(path));
+}
 
-    std::vector<std::filesystem::path> files;
-    for (const auto& entry : std::filesystem::directory_iterator(path)) {
-        if (!entry.is_regular_file()) {
-            continue;
-        }
-        std::string suffix = entry.path().extension().string();
-        if (!suffix.empty() && suffix.front() == '.') {
-            suffix.erase(suffix.begin());
-        }
-        if (contains(kVideoSuffixes, to_lower(suffix))) {
-            files.push_back(entry.path());
-        }
-    }
-
-    std::vector<std::vector<std::string>> matched;
-    matched.reserve(files.size());
-    for (const auto& file : files) {
-        matched.push_back(match_numbers(path_to_utf8_string(file.stem())));
-    }
-
-    std::vector<std::vector<std::string>> matched_non_empty;
-    std::vector<std::filesystem::path> files_non_empty;
-    for (std::size_t i = 0; i < matched.size(); ++i) {
-        if (!matched[i].empty()) {
-            matched_non_empty.push_back(matched[i]);
-            files_non_empty.push_back(files[i]);
-        }
-    }
-    if (matched_non_empty.empty()) {
-        throw std::runtime_error("No matched numbers found in video file names.");
-    }
-
-    std::vector<std::string> reduced_numbers = reduce_name(matched_non_empty);
-    VideoMap result;
-    for (std::size_t i = 0; i < reduced_numbers.size(); ++i) {
-        result[reduced_numbers[i]] = files_non_empty[i];
-    }
-    return result;
+SubtitleMap find_subtitles(const std::vector<std::filesystem::path>& files) {
+    const MatchedFiles matched = collect_matched_files(
+        files,
+        kSubtitleSuffixes,
+        "No matched numbers found in subtitle file names.");
+    return build_matched_map<SubtitleMap>(
+        matched,
+        [](SubtitleMap& result, const std::string& key, const std::filesystem::path& file) {
+            result[key].push_back(file);
+        });
 }
 
 SubtitleMap find_subtitles(const std::filesystem::path& path) {
-    ensure_directory_exists(path, 0);
-
-    std::vector<std::filesystem::path> files;
-    for (const auto& entry : std::filesystem::directory_iterator(path)) {
-        if (!entry.is_regular_file()) {
-            continue;
-        }
-        std::string suffix = entry.path().extension().string();
-        if (!suffix.empty() && suffix.front() == '.') {
-            suffix.erase(suffix.begin());
-        }
-        if (contains(kSubtitleSuffixes, to_lower(suffix))) {
-            files.push_back(entry.path());
-        }
-    }
-
-    std::vector<std::vector<std::string>> matched_non_empty;
-    std::vector<std::filesystem::path> files_non_empty;
-    for (const auto& file : files) {
-        std::vector<std::string> matches = match_numbers(path_to_utf8_string(file.stem()));
-        if (!matches.empty()) {
-            matched_non_empty.push_back(std::move(matches));
-            files_non_empty.push_back(file);
-        }
-    }
-    if (matched_non_empty.empty()) {
-        throw std::runtime_error("No matched numbers found in subtitle file names.");
-    }
-
-    std::vector<std::string> reduced_numbers = reduce_name(matched_non_empty);
-    SubtitleMap result;
-    for (std::size_t i = 0; i < reduced_numbers.size(); ++i) {
-        result[reduced_numbers[i]].push_back(files_non_empty[i]);
-    }
-    return result;
+    return find_subtitles(list_subtitle_files(path));
 }
 
 std::vector<RenameOperation> plan_renames(
-    const std::filesystem::path& video_path,
-    const std::filesystem::path& subtitle_path,
+    const std::vector<std::filesystem::path>& video_files,
+    const std::vector<std::filesystem::path>& subtitle_files,
     const RenameOptions& options) {
-    VideoMap videos = find_videos(video_path);
-    SubtitleMap subtitles = find_subtitles(subtitle_path);
+    VideoMap videos = find_videos(video_files);
+    SubtitleMap subtitles = find_subtitles(subtitle_files);
 
     std::vector<RenameOperation> operations;
     for (const auto& [key, video] : videos) {
@@ -389,6 +470,25 @@ std::vector<RenameOperation> plan_renames(
 }
 
 std::vector<RenameOperation> plan_renames(
+    const std::vector<std::filesystem::path>& video_files,
+    const std::vector<std::filesystem::path>& subtitle_files,
+    bool will_copy) {
+    RenameOptions options;
+    options.will_copy = will_copy;
+    return plan_renames(video_files, subtitle_files, options);
+}
+
+std::vector<RenameOperation> plan_renames(
+    const std::filesystem::path& video_path,
+    const std::filesystem::path& subtitle_path,
+    const RenameOptions& options) {
+    return plan_renames(
+        list_video_files(video_path),
+        list_subtitle_files(subtitle_path),
+        options);
+}
+
+std::vector<RenameOperation> plan_renames(
     const std::filesystem::path& video_path,
     const std::filesystem::path& subtitle_path,
     bool will_copy) {
@@ -398,34 +498,47 @@ std::vector<RenameOperation> plan_renames(
 }
 
 std::vector<std::filesystem::path> rename_subtitles(
-    const std::filesystem::path& video_path,
-    const std::filesystem::path& subtitle_path,
+    const std::vector<std::filesystem::path>& video_files,
+    const std::vector<std::filesystem::path>& subtitle_files,
     const RenameOptions& options) {
-    std::vector<RenameOperation> operations = plan_renames(video_path, subtitle_path, options);
+    std::vector<RenameOperation> operations = plan_renames(video_files, subtitle_files, options);
     std::vector<std::filesystem::path> created_paths;
     created_paths.reserve(operations.size() * (options.will_copy ? 2U : 1U));
 
     for (const auto& operation : operations) {
-        if (!is_same_path(operation.subtitle_path, operation.renamed_subtitle_path)) {
-            std::filesystem::copy_file(
-                operation.subtitle_path,
-                operation.renamed_subtitle_path,
-                std::filesystem::copy_options::skip_existing);
+        if (is_same_path(operation.subtitle_path, operation.renamed_subtitle_path)) {
+            created_paths.push_back(operation.renamed_subtitle_path);
+        } else if (copy_if_needed(operation.subtitle_path, operation.renamed_subtitle_path)) {
+            created_paths.push_back(operation.renamed_subtitle_path);
         }
-        created_paths.push_back(operation.renamed_subtitle_path);
 
         if (options.will_copy && !operation.copied_subtitle_path.empty()) {
-            if (!is_same_path(operation.subtitle_path, operation.copied_subtitle_path)) {
-                std::filesystem::copy_file(
-                    operation.subtitle_path,
-                    operation.copied_subtitle_path,
-                    std::filesystem::copy_options::skip_existing);
+            if (copy_if_needed(operation.subtitle_path, operation.copied_subtitle_path)) {
+                created_paths.push_back(operation.copied_subtitle_path);
             }
-            created_paths.push_back(operation.copied_subtitle_path);
         }
     }
 
     return created_paths;
+}
+
+std::vector<std::filesystem::path> rename_subtitles(
+    const std::vector<std::filesystem::path>& video_files,
+    const std::vector<std::filesystem::path>& subtitle_files,
+    bool will_copy) {
+    RenameOptions options;
+    options.will_copy = will_copy;
+    return rename_subtitles(video_files, subtitle_files, options);
+}
+
+std::vector<std::filesystem::path> rename_subtitles(
+    const std::filesystem::path& video_path,
+    const std::filesystem::path& subtitle_path,
+    const RenameOptions& options) {
+    return rename_subtitles(
+        list_video_files(video_path),
+        list_subtitle_files(subtitle_path),
+        options);
 }
 
 std::vector<std::filesystem::path> rename_subtitles(
