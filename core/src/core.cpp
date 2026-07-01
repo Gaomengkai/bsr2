@@ -64,6 +64,10 @@ std::string path_to_utf8_string(const std::filesystem::path& path) {
     return path.u8string();
 }
 
+std::filesystem::path path_from_utf8_string(const std::string& value) {
+    return std::filesystem::u8path(value);
+}
+
 std::string normalize_episode_token(std::string token) {
     if (token.size() == 1 && std::isdigit(static_cast<unsigned char>(token.front()))) {
         token.insert(token.begin(), '0');
@@ -116,11 +120,12 @@ std::string normalize_extra_suffix(std::string value) {
 
 bool is_preserved_subtitle_suffix_token(const std::string& token) {
     static const std::regex kSubtitleLanguagePattern("[SsTt][Cc]");
-    return token.size() <= 4 || std::regex_search(token, kSubtitleLanguagePattern);
+    return token == "简体" || token == "繁体" ||
+           token.size() <= 4 || std::regex_search(token, kSubtitleLanguagePattern);
 }
 
 std::vector<std::string> extract_preserved_language_tokens(const std::filesystem::path& subtitle_path) {
-    static const std::regex kBracketLanguagePattern(R"(\[((?:CHS|CHT))\])");
+    static const std::regex kBracketLanguagePattern(R"(\[((?:CHS|CHT|简体|繁体))\])");
     std::string stem = path_to_utf8_string(subtitle_path.stem());
     std::vector<std::string> tags;
     for (std::sregex_iterator it(stem.begin(), stem.end(), kBracketLanguagePattern), end; it != end; ++it) {
@@ -184,10 +189,7 @@ std::filesystem::path build_subtitle_name(
         joined_suffix += suffix_tokens[i];
     }
 
-    std::filesystem::path result = video_path.stem();
-    result += ".";
-    result += joined_suffix;
-    return result;
+    return path_from_utf8_string(path_to_utf8_string(video_path.stem()) + "." + joined_suffix);
 }
 
 template <typename MapT>
@@ -274,6 +276,16 @@ bool copy_if_needed(
     }
 
     std::error_code ec;
+    if (std::filesystem::exists(destination, ec)) {
+        return false;
+    }
+    if (ec) {
+        throw std::filesystem::filesystem_error(
+            "Failed to check subtitle destination",
+            destination,
+            ec);
+    }
+
     const bool copied = std::filesystem::copy_file(
         source,
         destination,

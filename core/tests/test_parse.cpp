@@ -190,7 +190,10 @@ void test_rename_subtitles_does_not_report_skip_existing_as_created() {
     write_text(renamed_subtitle, "existing-subtitle-copy");
     write_text(copied_subtitle, "existing-video-copy");
 
-    const auto created = bsr::core::rename_subtitles(videos, subtitles, true);
+    const auto created = bsr::core::rename_subtitles(
+        std::vector<fs::path>{video},
+        std::vector<fs::path>{subtitle},
+        true);
     expect(created.empty(), "Skip-existing outputs should not be reported as created");
 }
 
@@ -232,6 +235,35 @@ void test_rename_subtitles_preserves_cht_tag() {
 
     expect(created.size() == 1, "rename_subtitles should report the subtitle-directory copy");
     expect(fs::exists(renamed_subtitle), "Renamed CHT subtitle missing");
+}
+
+void test_rename_subtitles_preserves_chinese_script_tag() {
+    TempDir root;
+    const fs::path videos = root.path / "videos";
+    const fs::path subtitles = root.path / "subtitles";
+    fs::create_directories(videos);
+    fs::create_directories(subtitles);
+
+    const fs::path video1 = videos / "Just Because! 01.mkv";
+    const fs::path video2 = videos / "Just Because! 02.mkv";
+    const fs::path subtitle1 = subtitles / fs::path(L"Just Because! 01.繁体.ass");
+    const fs::path subtitle2 = subtitles / fs::path(L"Just Because! 02.简体.ass");
+    write_text(video1, "video-1");
+    write_text(video2, "video-2");
+    write_text(subtitle1, "subtitle-1");
+    write_text(subtitle2, "subtitle-2");
+
+    const auto created = bsr::core::rename_subtitles(videos, subtitles, false);
+
+    expect(created.size() == 2, "rename_subtitles should report both preserved script-tag subtitles");
+    expect(fs::exists(subtitle1), "Traditional Chinese script-tag subtitle missing");
+    expect(fs::exists(subtitle2), "Simplified Chinese script-tag subtitle missing");
+    expect(created[0].filename().native().find(L"繁体") != fs::path::string_type::npos ||
+               created[1].filename().native().find(L"繁体") != fs::path::string_type::npos,
+           "Expected a preserved traditional Chinese tag in the output");
+    expect(created[0].filename().native().find(L"简体") != fs::path::string_type::npos ||
+               created[1].filename().native().find(L"简体") != fs::path::string_type::npos,
+           "Expected a preserved simplified Chinese tag in the output");
 }
 
 void test_rename_subtitles_adds_custom_suffix() {
@@ -404,6 +436,7 @@ int main() {
         test_rename_subtitles_does_not_report_skip_existing_as_created();
         test_rename_subtitles_silently_skips_same_name_copy();
         test_rename_subtitles_preserves_cht_tag();
+        test_rename_subtitles_preserves_chinese_script_tag();
         test_rename_subtitles_adds_custom_suffix();
         test_generated_slime_s2_subtitles();
         test_single_digit_subtitles_match_zero_padded_videos();
